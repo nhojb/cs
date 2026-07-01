@@ -274,6 +274,58 @@ func TestMCPSearchHandlerNoTruncation(t *testing.T) {
 	}
 }
 
+func TestMCPSearchHandlerRejectsUnknownParam(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Directory = t.TempDir()
+	cache := NewSearchCache()
+	handler := mcpSearchHandler(&cfg, cache)
+
+	// Reproduces the reported bug: caller passes non-existent top-level
+	// "path" and "ext" keys. These must be rejected, not silently dropped.
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "classic migration backup bootstrap",
+		"path":  "projects/desktop-raycast/packages/node-backend/src",
+		"ext":   "ts",
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for unknown parameter")
+	}
+	text := result.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(text, "ext") {
+		t.Errorf("expected error to name the unknown 'ext' parameter, got: %s", text)
+	}
+	if !strings.Contains(text, "include_ext") {
+		t.Errorf("expected error to point to 'include_ext', got: %s", text)
+	}
+}
+
+func TestMCPSearchHandlerAcceptsKnownParams(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Directory = t.TempDir()
+	cache := NewSearchCache()
+	handler := mcpSearchHandler(&cfg, cache)
+
+	// "path" is a valid top-level param — this must not be rejected.
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "anything",
+		"path":  "src",
+		"file":  "*.go",
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result for valid params: %v", result.Content[0].(mcp.TextContent).Text)
+	}
+}
+
 func TestMCPGetFileHandlerMissingPath(t *testing.T) {
 	cfg := DefaultConfig()
 	handler := mcpGetFileHandler(&cfg)

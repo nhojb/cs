@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/boyter/cs/v3/pkg/common"
@@ -328,6 +329,37 @@ func mcpGetFileHandler(cfg *Config) server.ToolHandlerFunc {
 	}
 }
 
+// mcpSearchParams is the set of accepted parameters for the search tool, in a
+// stable order for error messages. Any argument not in this set is rejected so
+// that malformed calls (e.g. a non-existent "ext" or "path" top-level key) fail
+// loudly instead of being silently dropped and running an unfiltered search.
+var mcpSearchParams = []string{
+	"query", "max_results", "offset", "snippet_length", "case_sensitive",
+	"include_ext", "language", "path", "file", "gravity", "profile", "dedup",
+	"code_filter", "snippet_mode", "line_limit", "context", "context_before", "context_after",
+}
+
+var mcpSearchParamSet = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(mcpSearchParams))
+	for _, p := range mcpSearchParams {
+		m[p] = struct{}{}
+	}
+	return m
+}()
+
+// unknownSearchParams returns any argument keys that are not accepted params,
+// sorted for a stable error message.
+func unknownSearchParams(args map[string]any) []string {
+	var unknown []string
+	for k := range args {
+		if _, ok := mcpSearchParamSet[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
 // mcpSearchHandler returns an MCP tool handler that runs a code search.
 func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -337,6 +369,17 @@ func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 		}
 		if strings.TrimSpace(query) == "" {
 			return mcp.NewToolResultError("query must not be empty"), nil
+		}
+
+		// Reject unknown parameters so malformed calls fail loudly instead of
+		// silently running an unfiltered search (e.g. a caller passing a
+		// non-existent top-level "ext" or "path" key and getting whole-repo results).
+		if unknown := unknownSearchParams(request.GetArguments()); len(unknown) > 0 {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"unknown parameter(s): %s. To filter by path, filename, extension, or language use the "+
+					"'path', 'file', 'include_ext', or 'language' parameters (there is no top-level 'ext' parameter), "+
+					"or in-query filters (path:, file:, ext:, lang:). Accepted parameters: %s.",
+				strings.Join(unknown, ", "), strings.Join(mcpSearchParams, ", "))), nil
 		}
 
 		// Copy config so we can override per-request without mutating the shared config
