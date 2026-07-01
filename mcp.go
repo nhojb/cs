@@ -15,6 +15,7 @@ import (
 
 	"github.com/boyter/cs/v3/pkg/common"
 	"github.com/boyter/cs/v3/pkg/ranker"
+	"github.com/boyter/cs/v3/pkg/search"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -427,6 +428,58 @@ func composeSearchQuery(query, pathFilter, fileFilter string) string {
 	return "(" + query + ") " + strings.Join(groups, " ")
 }
 
+// andedKeywordsForHint returns the positive, bare keyword terms of a query when
+// the query is a pure conjunction of keywords (contains no OR). It returns nil
+// when the query already uses OR, or has fewer than two positive keyword terms —
+// i.e. when an "all terms ANDed" hint would not apply. Phrases, regex, fuzzy and
+// filter terms are ignored, and negated keywords (under NOT) are excluded.
+func andedKeywordsForHint(query string) []string {
+	lexer := search.NewLexer(strings.NewReader(query))
+	parser := search.NewParser(lexer)
+	ast, _ := parser.ParseQuery()
+	if ast == nil {
+		return nil
+	}
+
+	var keywords []string
+	hasOr := false
+	var walk func(n search.Node, negated bool)
+	walk = func(n search.Node, negated bool) {
+		switch t := n.(type) {
+		case *search.AndNode:
+			walk(t.Left, negated)
+			walk(t.Right, negated)
+		case *search.OrNode:
+			hasOr = true
+		case *search.NotNode:
+			walk(t.Expr, !negated)
+		case *search.KeywordNode:
+			if !negated {
+				keywords = append(keywords, t.Value)
+			}
+		}
+	}
+	walk(ast, false)
+
+	if hasOr || len(keywords) < 2 {
+		return nil
+	}
+	return keywords
+}
+
+// andHintMessage builds the empty-result explanation for a multi-term AND query,
+// nudging the caller toward fewer terms or an OR query.
+func andHintMessage(keywords []string) string {
+	quoted := make([]string, len(keywords))
+	for i, k := range keywords {
+		quoted[i] = "\"" + k + "\""
+	}
+	return fmt.Sprintf(
+		"0 results. Terms are ANDed, so this requires all %d of %s in a single file. "+
+			"Try fewer/more-specific terms, or OR them to match any: '%s'.",
+		len(keywords), strings.Join(quoted, ", "), strings.Join(keywords, " OR "))
+}
+
 // mcpSearchHandler returns an MCP tool handler that runs a code search.
 func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -463,6 +516,7 @@ func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 				fileFilter = s
 			}
 		}
+		userQuery := query
 		query = composeSearchQuery(query, pathFilter, fileFilter)
 
 		// Copy config so we can override per-request without mutating the shared config
@@ -632,6 +686,14 @@ func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 				"Showing results %d\u2013%d of %d. Pass offset=%d for the next page.",
 				startResult, endResult, totalMatches, nextOffset,
 			)
+		} else if totalMatches == 0 {
+			// Explain the most common cause of a surprising empty result: a
+			// multi-word query whose terms are all ANDed. Only fires for pure
+			// AND-of-keywords queries (no OR), analysed on the caller's original
+			// query rather than the path/file-composed one.
+			if kws := andedKeywordsForHint(userQuery); len(kws) > 0 {
+				response.Message = andHintMessage(kws)
+			}
 		}
 
 		jsonBytes, err := json.Marshal(response)

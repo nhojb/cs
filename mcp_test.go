@@ -391,6 +391,91 @@ func TestComposeSearchQuery(t *testing.T) {
 	}
 }
 
+func TestAndedKeywordsForHint(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"multi keyword AND", "database init startup sequence", []string{"database", "init", "startup", "sequence"}},
+		{"single keyword", "database", nil},
+		{"has OR", "database OR init OR startup", nil},
+		{"grouped OR", "(database OR init) startup", nil},
+		{"phrase not counted", `"database init"`, nil},
+		{"regex not counted", `/func\s+init/`, nil},
+		{"negated excluded", "database NOT init", nil},
+		{"keywords plus filter still hints", "database init path:src", []string{"database", "init"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := andedKeywordsForHint(tc.query)
+			if len(got) != len(tc.want) {
+				t.Fatalf("andedKeywordsForHint(%q) = %v, want %v", tc.query, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("andedKeywordsForHint(%q) = %v, want %v", tc.query, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPSearchHandlerEmptyResultAndHint(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Directory = t.TempDir() // empty dir → guaranteed zero matches
+	cache := NewSearchCache()
+	handler := mcpSearchHandler(&cfg, cache)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "performStartupStep database init startup sequence",
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content[0].(mcp.TextContent).Text)
+	}
+	var parsed mcpSearchResponse
+	if err := json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &parsed); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if parsed.TotalMatches != 0 {
+		t.Fatalf("expected 0 matches, got %d", parsed.TotalMatches)
+	}
+	if !strings.Contains(parsed.Message, "ANDed") {
+		t.Errorf("expected an AND-explanation hint, got: %q", parsed.Message)
+	}
+	if !strings.Contains(parsed.Message, "OR") {
+		t.Errorf("expected the hint to suggest OR, got: %q", parsed.Message)
+	}
+}
+
+func TestMCPSearchHandlerEmptyResultNoHintForSingleTerm(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Directory = t.TempDir()
+	cache := NewSearchCache()
+	handler := mcpSearchHandler(&cfg, cache)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "loneterm",
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var parsed mcpSearchResponse
+	if err := json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &parsed); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if parsed.Message != "" {
+		t.Errorf("expected no hint for a single-term query, got: %q", parsed.Message)
+	}
+}
+
 func TestMCPGetFileHandlerMissingPath(t *testing.T) {
 	cfg := DefaultConfig()
 	handler := mcpGetFileHandler(&cfg)
