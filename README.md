@@ -501,6 +501,11 @@ The MCP server exposes two tools:
 | `gravity` | string | no | Complexity gravity intent: `brain`, `logic`, `default`, `low`, `off`                             |
 | `profile` | string | no | Ranking profile: `balanced` (default), `precise`, `broad` - overrides gravity/noise/test-penalty |
 
+The `path`, `file`, `include_ext`, and `language` parameters apply to the whole query and are the robust way to
+scope a search — unlike in-query filters (`path:`, `file:`, `ext:`, `lang:`), which bind only to the adjacent term
+(`a OR b path:src` means `a OR (b AND path:src)`). Note there is no top-level `ext` parameter; use `include_ext`.
+Unknown parameters are rejected with an error rather than silently ignored.
+
 Results are returned as JSON with the same fields as `--format json`: filename, location, score, snippet content, match locations, language, and code statistics.
 
 **`get_file`** — Read the contents of a file within the project directory.

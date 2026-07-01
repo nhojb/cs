@@ -74,6 +74,15 @@ func StartMCPServer(cfg *Config) {
 			"- ext:value — filter by extension: ext:go, ext=ts,tsx\n\n"+
 			"Filter operators: = != (e.g. lang!=python, file!=test)\n"+
 			"Negation: NOT file:test, file!=test, NOT path:vendor, path!=vendor\n\n"+
+			"IMPORTANT — filter precedence: an in-query filter binds to the ADJACENT term, not the whole query. "+
+			"So 'a OR b path:src' parses as 'a OR (b AND path:src)' and matches for 'a' leak in from ANY path. "+
+			"To scope the whole query, either group it — '(a OR b) path:src' — or use the top-level 'path'/'file' "+
+			"parameters, which are ANDed with the entire query regardless of OR grouping. Same rule applies to lang:/ext:.\n\n"+
+			"Top-level filter parameters (path, file, include_ext, language) are the ROBUST way to scope a search: "+
+			"they apply to the whole query, so they never hit the precedence trap above. Prefer them over in-query filters "+
+			"when you just want to restrict a search to a directory, filename, extension, or language. "+
+			"NOTE: there is no top-level 'ext' parameter — the extension parameter is named 'include_ext'. "+
+			"Unknown parameters are rejected with an error rather than silently ignored.\n\n"+
 			"Content type filter (code_filter parameter):\n"+
 			"- 'only-code': matches in code only, skipping comments and strings — e.g. find where a function is called, not just mentioned\n"+
 			"- 'only-strings': matches in string literals only — find SQL queries, error messages, config values, connection strings\n"+
@@ -96,6 +105,7 @@ func StartMCPServer(cfg *Config) {
 			"- For structural patterns use regex: '/type\\s+\\w+Error\\s+struct/' not 'type Error struct'. Keywords match anywhere in the file, not adjacently.\n"+
 			"- Common regex mistake: `magic.*number` without slashes is treated as the keyword 'magic.*number', not as regex. Always wrap in slashes: `/magic.*number/`.\n"+
 			"- NOT binds to the next term only, not the whole query. 'a OR b NOT path:vendor' means 'a OR (b AND NOT path:vendor)'. To exclude globally, use grouping: '(a OR b) NOT path:vendor'. Precedence: NOT (tightest) > AND > OR (loosest).\n"+
+			"- The same trap applies to POSITIVE filters: 'a OR b path:src' means 'a OR (b AND path:src)', so 'a' matches leak in from any path. Group the query — '(a OR b) path:src' — or use the top-level 'path'/'file'/'include_ext'/'language' parameters, which scope the whole query.\n"+
 			"- max_results defaults to 20. Set higher (e.g. 100) for broad discovery or exploring unfamiliar code.\n\n"+
 			"Workflow tips:\n"+
 			"- Searching for a specific term, identifier, or function name → use snippet_mode='grep' with context=5-10. This gives every occurrence with surrounding code in one call.\n"+
@@ -107,6 +117,8 @@ func StartMCPServer(cfg *Config) {
 				"grouping ('(auth OR login) AND handler'), quoted phrases ('\"exact match\"'), regex (/pattern/), fuzzy (term~1, term~2). "+
 				"In-query filters: file:name, path:dir, lang:go, ext:ts. Operators: = != (lang!=python, file!=test). "+
 				"Multi-value: lang=go,python, ext=ts,tsx. 'file:' matches filename only; 'path:' matches the full directory path. "+
+				"NOTE: in-query filters bind to the adjacent term — 'a OR b path:src' means 'a OR (b AND path:src)'. Group with parens "+
+				"or use the top-level 'path'/'file'/'include_ext'/'language' parameters to scope the whole query. "+
 				"Query limits: max 250 characters and 12 unique search terms."),
 			mcp.Required(),
 		),
