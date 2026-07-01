@@ -83,7 +83,7 @@ func StartMCPServer(cfg *Config) {
 			"Combined examples:\n"+
 			"- 'jwt middleware lang:go NOT path:vendor' — find Go JWT middleware outside vendor\n"+
 			"- query='dense_rank' code_filter='only-strings' — find the actual SQL string, not code references\n"+
-			"- query='middleware' code_filter='only-code' path filter='NOT path:vendor' — find middleware implementations\n"+
+			"- query='middleware' code_filter='only-code' path='src' — find middleware implementations scoped to src via the top-level path param\n"+
 			"- query='authentication' code_filter='only-comments' — find where devs explain auth flow\n"+
 			"- query='ConnectDB' code_filter='only-declarations' language='Go' — find where ConnectDB is defined (func/type/var declaration)\n"+
 			"- query='ConnectDB' code_filter='only-usages' language='Go' — find all call sites of ConnectDB, excluding its definition\n\n"+
@@ -127,6 +127,19 @@ func StartMCPServer(cfg *Config) {
 		),
 		mcp.WithString("language",
 			mcp.Description("Comma-separated list of language types to search (e.g. \"Go,Python,JavaScript\"). Convenience parameter equivalent to in-query 'lang:Go,Python' filter."),
+		),
+		mcp.WithString("path",
+			mcp.Description("Restrict results to files whose full path matches. Substring match (e.g. \"src/handlers\"), or glob if it "+
+				"contains */?/[ (e.g. \"*/pkg/*\"). Comma-separated values are ORed (e.g. \"src,internal\" = under src OR internal). "+
+				"Applied as an AND against the ENTIRE query, so — unlike an in-query 'path:' filter — it is never subject to OR "+
+				"precedence and cannot be leaked past. This is the robust way to scope a search to a directory. "+
+				"Equivalent to wrapping your query: '(<query>) path:<value>'."),
+		),
+		mcp.WithString("file",
+			mcp.Description("Restrict results to files whose FILENAME matches (not the directory path — use 'path' for that). Substring match "+
+				"(e.g. \"handler\"), or glob if it contains */?/[ (e.g. \"*_test.go\"). Comma-separated values are ORed. "+
+				"Applied as an AND against the entire query, so it is never subject to OR precedence. Equivalent to "+
+				"wrapping your query: '(<query>) file:<value>'."),
 		),
 		mcp.WithString("gravity",
 			mcp.Description("Complexity gravity intent controlling how much cyclomatic complexity boosts ranking. "+
@@ -360,6 +373,48 @@ func unknownSearchParams(args map[string]any) []string {
 	return unknown
 }
 
+// buildFilterGroup turns a comma-separated top-level filter value into an
+// in-query clause for the given field ("path" or "file"). Multiple values are
+// ORed and wrapped in parens so the group evaluates as a single unit. Returns
+// "" when there is nothing to add.
+func buildFilterGroup(field, raw string) string {
+	var clauses []string
+	for _, v := range strings.Split(raw, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		clauses = append(clauses, field+":"+v)
+	}
+	switch len(clauses) {
+	case 0:
+		return ""
+	case 1:
+		return clauses[0]
+	default:
+		return "(" + strings.Join(clauses, " OR ") + ")"
+	}
+}
+
+// composeSearchQuery folds the top-level path/file filters into the query so
+// they AND against the WHOLE query, immune to OR precedence. The user query is
+// wrapped in parens and each filter group is appended (juxtaposition = AND).
+// The composed string flows through the normal parser and cache key, so it
+// behaves exactly as if the caller had written the filters in-query themselves.
+func composeSearchQuery(query, pathFilter, fileFilter string) string {
+	var groups []string
+	if g := buildFilterGroup("path", pathFilter); g != "" {
+		groups = append(groups, g)
+	}
+	if g := buildFilterGroup("file", fileFilter); g != "" {
+		groups = append(groups, g)
+	}
+	if len(groups) == 0 {
+		return query
+	}
+	return "(" + query + ") " + strings.Join(groups, " ")
+}
+
 // mcpSearchHandler returns an MCP tool handler that runs a code search.
 func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -381,6 +436,22 @@ func mcpSearchHandler(cfg *Config, cache *SearchCache) server.ToolHandlerFunc {
 					"or in-query filters (path:, file:, ext:, lang:). Accepted parameters: %s.",
 				strings.Join(unknown, ", "), strings.Join(mcpSearchParams, ", "))), nil
 		}
+
+		// Fold top-level path/file filters into the query so they AND against the
+		// whole query, immune to OR precedence.
+		pathFilter := ""
+		if v, ok := request.GetArguments()["path"]; ok {
+			if s, ok := v.(string); ok {
+				pathFilter = s
+			}
+		}
+		fileFilter := ""
+		if v, ok := request.GetArguments()["file"]; ok {
+			if s, ok := v.(string); ok {
+				fileFilter = s
+			}
+		}
+		query = composeSearchQuery(query, pathFilter, fileFilter)
 
 		// Copy config so we can override per-request without mutating the shared config
 		searchCfg := *cfg

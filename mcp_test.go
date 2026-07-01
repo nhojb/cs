@@ -326,6 +326,71 @@ func TestMCPSearchHandlerAcceptsKnownParams(t *testing.T) {
 	}
 }
 
+func TestMCPSearchHandlerTopLevelPathScopesGlobally(t *testing.T) {
+	dir := t.TempDir()
+	// Two dirs. Only "wanted" should survive a path filter, even though the
+	// query uses OR (which would leak "other" matches via in-query precedence).
+	for _, sub := range []string{"wanted", "other"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+		content := "package main\n\nfunc f() {\n\t// alphatoken betatoken\n}\n"
+		if err := os.WriteFile(filepath.Join(dir, sub, "f.go"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := DefaultConfig()
+	cfg.Directory = dir
+	cache := NewSearchCache()
+	handler := mcpSearchHandler(&cfg, cache)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "alphatoken OR betatoken",
+		"path":  "wanted",
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content[0].(mcp.TextContent).Text)
+	}
+	var parsed mcpSearchResponse
+	if err := json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &parsed); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if parsed.TotalMatches != 1 {
+		t.Fatalf("expected exactly 1 match under 'wanted', got %d", parsed.TotalMatches)
+	}
+	if !strings.Contains(parsed.Results[0].Location, filepath.Join("wanted", "f.go")) {
+		t.Errorf("expected match in wanted/f.go, got %s", parsed.Results[0].Location)
+	}
+}
+
+func TestComposeSearchQuery(t *testing.T) {
+	cases := []struct {
+		name             string
+		query, path, fil string
+		want             string
+	}{
+		{"none", "foo OR bar", "", "", "foo OR bar"},
+		{"path", "foo OR bar", "src", "", "(foo OR bar) path:src"},
+		{"file", "foo", "", "*.go", "(foo) file:*.go"},
+		{"both", "foo", "src", "*.go", "(foo) path:src file:*.go"},
+		{"multi-path ORed", "foo", "src,internal", "", "(foo) (path:src OR path:internal)"},
+		{"trims and skips empties", "foo", " src , ", "", "(foo) path:src"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composeSearchQuery(tc.query, tc.path, tc.fil); got != tc.want {
+				t.Errorf("composeSearchQuery(%q, %q, %q) = %q, want %q", tc.query, tc.path, tc.fil, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMCPGetFileHandlerMissingPath(t *testing.T) {
 	cfg := DefaultConfig()
 	handler := mcpGetFileHandler(&cfg)

@@ -496,6 +496,8 @@ The MCP server exposes two tools:
 | `case_sensitive` | boolean | no | Case sensitive search                                                                            |
 | `include_ext` | string | no | Comma-separated file extensions (e.g. `go,js,py`)                                                |
 | `language` | string | no | Comma-separated language types (e.g. `Go,Python`)                                                |
+| `path` | string | no | Restrict to files whose full path matches (substring or glob; comma-separated values are ORed). ANDed against the whole query |
+| `file` | string | no | Restrict to files whose filename matches (substring or glob; comma-separated values are ORed). ANDed against the whole query |
 | `gravity` | string | no | Complexity gravity intent: `brain`, `logic`, `default`, `low`, `off`                             |
 | `profile` | string | no | Ranking profile: `balanced` (default), `precise`, `broad` - overrides gravity/noise/test-penalty |
 
